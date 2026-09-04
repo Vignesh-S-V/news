@@ -8,7 +8,6 @@ CORS(app)
 
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-
 NEWSDATA_URL = "https://newsdata.io/api/1/news"
 
 
@@ -16,6 +15,7 @@ NEWSDATA_URL = "https://newsdata.io/api/1/news"
 def get_news():
     category = request.args.get("category")
     state = request.args.get("state")
+    query = request.args.get("query")
     language = request.args.get("language", "en")
 
     params = {
@@ -23,10 +23,15 @@ def get_news():
         "country": "in",
         "language": language,
     }
-    if category and category != "top":
-        params["category"] = category
-    if state:
-        params["q"] = state
+
+    if query:
+        # Search overrides category/state - full related news for that keyword
+        params["q"] = query
+    else:
+        if category and category != "top":
+            params["category"] = category
+        if state:
+            params["q"] = state
 
     try:
         r = requests.get(NEWSDATA_URL, params=params, timeout=12)
@@ -71,7 +76,6 @@ def analyze_news():
         }
     }
 
-    # FIX: plain URL string (not markdown link), and current model name
     gemini_url = (
         f"https://generativelanguage.googleapis.com"
         f"/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
@@ -79,7 +83,6 @@ def analyze_news():
 
     try:
         resp = requests.post(gemini_url, json=payload, headers={"Content-Type": "application/json"}, timeout=20)
-
         if resp.status_code != 200:
             print("Gemini API Error:", resp.text)
             return jsonify({"error": f"Gemini Error ({resp.status_code}): {resp.text}"}), resp.status_code
@@ -87,7 +90,6 @@ def analyze_news():
         res_json = resp.json()
         raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
         return jsonify({"analysis": raw_text})
-
     except Exception as e:
         print("Backend Error:", str(e))
         return jsonify({"error": str(e)}), 500
