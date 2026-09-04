@@ -11,6 +11,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 NEWSDATA_URL = "https://newsdata.io/api/1/news"
 
+
 @app.route("/api/news")
 def get_news():
     category = request.args.get("category")
@@ -34,6 +35,7 @@ def get_news():
     except requests.exceptions.RequestException as e:
         return jsonify({"error": str(e)}), 502
 
+
 @app.route("/api/analyze", methods=["POST"])
 def analyze_news():
     if not GEMINI_API_KEY:
@@ -53,7 +55,6 @@ def analyze_news():
         "3. 'scientific_reasons': 3-4 sentences in Tamil covering scientific causes, facts, and what scientists/experts say.\n"
         "4. 'future_outlook': 2-3 sentences in Tamil on whether this could happen again, future risks, and prevention."
     )
-
     user_prompt = f"Headline: {headline}\nDetails: {desc}\nDate: {date}"
 
     payload = {
@@ -70,25 +71,27 @@ def analyze_news():
         }
     }
 
-    # இங்கே எந்த பிராக்கெட்டும் இல்லாமல் மிகத் தெளிவாக எழுதப்பட்டுள்ளது
-    host = "[https://generativelanguage.googleapis.com](https://generativelanguage.googleapis.com)"
-    path = "/v1beta/models/gemini-1.5-flash:generateContent"
-    gemini_url = f"{host}{path}?key={GEMINI_API_KEY}"
+    # FIX: plain URL string, NOT markdown link format
+    gemini_url = (
+        f"https://generativelanguage.googleapis.com"
+        f"/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    )
 
     try:
         resp = requests.post(gemini_url, json=payload, headers={"Content-Type": "application/json"}, timeout=20)
-        
+
         if resp.status_code != 200:
             print("Gemini API Error:", resp.text)
             return jsonify({"error": f"Gemini Error ({resp.status_code}): {resp.text}"}), resp.status_code
-        
+
         res_json = resp.json()
         raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
         return jsonify({"analysis": raw_text})
-        
+
     except Exception as e:
         print("Backend Error:", str(e))
         return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
