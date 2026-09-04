@@ -71,8 +71,7 @@ def analyze_news():
     }
 
     # URL is safely constructed here using string concatenation to avoid formatting issues
-    base_url = "[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=)"
-    gemini_url = base_url + GEMINI_API_KEY
+    gemini_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=" + GEMINI_API_KEY
 
     try:
         resp = requests.post(gemini_url, json=payload, headers={"Content-Type": "application/json"}, timeout=20)
