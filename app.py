@@ -189,8 +189,10 @@ def analyze_news():
     }
 
     # எந்த பிராக்கெட்டும் இல்லாத சுத்தமான மற்றும் பாதுகாப்பான URL
-    gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=){GEMINI_API_KEY}"
-
+       gemini_url = (
+        f"https://generativelanguage.googleapis.com"
+        f"/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
+    )
     try:
         resp = requests.post(gemini_url, json=payload, headers={"Content-Type": "application/json"}, timeout=20)
         if resp.status_code != 200:
