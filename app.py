@@ -9,6 +9,10 @@ CORS(app)
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 NEWSDATA_URL = "https://newsdata.io/api/1/news"
+# newsdata.io only returns older/date-ranged results from this endpoint.
+# NOTE: the archive endpoint needs a paid newsdata.io plan — on the free plan
+# this will return a plan-upgrade error from the provider, which is not a code bug.
+NEWSDATA_ARCHIVE_URL = "https://newsdata.io/api/1/archive"
 
 # newsdata.io free plan gives 10 articles per page.
 # We auto-paginate up to MAX_PAGES so the frontend gets more than just 10.
@@ -30,8 +34,10 @@ def get_news():
         "language": language,
     }
 
-    if query:
-        # Search overrides category/state - full related news for that keyword
+    if query and state:
+        # combine free-text search with a state name so both narrow the results together
+        base_params["q"] = f"{query} {state}"
+    elif query:
         base_params["q"] = query
     else:
         if category and category != "top":
@@ -44,6 +50,9 @@ def get_news():
     if to_date:
         base_params["to_date"] = to_date
 
+    # Past dates need the archive endpoint; "today"/no-date queries use the latest-news endpoint.
+    target_url = NEWSDATA_ARCHIVE_URL if (from_date or to_date) else NEWSDATA_URL
+
     all_results = []
     next_page = None
     last_error = None
@@ -54,7 +63,7 @@ def get_news():
             params["page"] = next_page
 
         try:
-            r = requests.get(NEWSDATA_URL, params=params, timeout=12)
+            r = requests.get(target_url, params=params, timeout=12)
             payload = r.json()
         except requests.exceptions.RequestException as e:
             last_error = str(e)
@@ -96,15 +105,27 @@ def analyze_news():
     headline = data.get("title", "")
     desc = data.get("desc", "")
     date = data.get("date", "")
+    focus = data.get("focus")  # optional: "india_economic_impact"
+
+    extra_key = ""
+    if focus == "india_economic_impact":
+        extra_key = (
+            "5. 'india_effect': 3-4 sentences in Tamil specifically explaining the direct or indirect "
+            "COST/ECONOMIC impact of this event on India - e.g. fuel/import prices, exports, rupee value, "
+            "interest rates, trade, inflation, stock market. Base this ONLY on real, verifiable connections; "
+            "if there is genuinely no meaningful impact on India, say that clearly instead of inventing one.\n"
+        )
 
     system_prompt = (
-        "You are an expert investigative journalist and scientist writing in rich, clear Tamil. "
-        "Analyze the provided news item and respond ONLY with a valid raw JSON object (no markdown, no ```json). "
-        "Strictly use these 4 keys:\n"
+        "You are an expert investigative journalist and economist writing in rich, clear Tamil. "
+        "Analyze the provided REAL news item and respond ONLY with a valid raw JSON object (no markdown, no ```json). "
+        "Do not invent facts, numbers, or events that are not reasonably supported by the headline/details given. "
+        "Strictly use these keys:\n"
         "1. 'what_happened': 3-4 sentences in Tamil explaining the event in detail.\n"
         "2. 'past_history': 3-4 sentences in Tamil detailing where and when similar incidents have happened previously in India or worldwide.\n"
-        "3. 'scientific_reasons': 3-4 sentences in Tamil covering scientific causes, facts, and what scientists/experts say.\n"
-        "4. 'future_outlook': 2-3 sentences in Tamil on whether this could happen again, future risks, and prevention."
+        "3. 'scientific_reasons': 3-4 sentences in Tamil covering scientific/economic causes, facts, and what experts say.\n"
+        "4. 'future_outlook': 2-3 sentences in Tamil on whether this could happen again, future risks, and prevention.\n"
+        f"{extra_key}"
     )
     user_prompt = f"Headline: {headline}\nDetails: {desc}\nDate: {date}"
 
