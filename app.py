@@ -70,8 +70,10 @@ def analyze_news():
         }
     }
 
-    # gemini-1.5-flash மாடல் பயன்படுத்தப்பட்டுள்ளது
-    gemini_url = "[https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=)" + GEMINI_API_KEY
+    # இங்கே எந்த பிராக்கெட்டும் இல்லாமல் மிகத் தெளிவாக எழுதப்பட்டுள்ளது
+    host = "[https://generativelanguage.googleapis.com](https://generativelanguage.googleapis.com)"
+    path = "/v1beta/models/gemini-1.5-flash:generateContent"
+    gemini_url = f"{host}{path}?key={GEMINI_API_KEY}"
 
     try:
         resp = requests.post(gemini_url, json=payload, headers={"Content-Type": "application/json"}, timeout=20)
