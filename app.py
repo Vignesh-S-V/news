@@ -44,7 +44,6 @@ def analyze_news():
     desc = data.get("desc", "")
     date = data.get("date", "")
 
-    # நீங்கள் கேட்ட 4 ஆழமான அம்சங்களுக்கான Prompt
     system_prompt = (
         "You are an expert investigative journalist and scientist writing in rich, clear Tamil. "
         "Analyze the provided news item and respond ONLY with a valid raw JSON object (no markdown, no ```json). "
@@ -71,12 +70,13 @@ def analyze_news():
         }
     }
 
-    gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={GEMINI_API_KEY}""
+    # URL is safely constructed here using string concatenation to avoid formatting issues
+    base_url = "[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=)"
+    gemini_url = base_url + GEMINI_API_KEY
 
     try:
         resp = requests.post(gemini_url, json=payload, headers={"Content-Type": "application/json"}, timeout=20)
         
-        # ஏதேனும் பிழை வந்தால் Render Logs-ல் பார்க்க ஏதுவாக
         if resp.status_code != 200:
             print("Gemini API Error:", resp.text)
             return jsonify({"error": f"Gemini Error ({resp.status_code}): {resp.text}"}), resp.status_code
