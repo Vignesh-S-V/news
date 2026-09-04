@@ -10,6 +10,10 @@ NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 NEWSDATA_URL = "https://newsdata.io/api/1/news"
 
+# newsdata.io free plan gives 10 articles per page.
+# We auto-paginate up to MAX_PAGES so the frontend gets more than just 10.
+MAX_PAGES = 5
+
 
 @app.route("/api/news")
 def get_news():
@@ -17,8 +21,10 @@ def get_news():
     state = request.args.get("state")
     query = request.args.get("query")
     language = request.args.get("language", "en")
+    from_date = request.args.get("from_date")
+    to_date = request.args.get("to_date")
 
-    params = {
+    base_params = {
         "apikey": NEWS_API_KEY,
         "country": "in",
         "language": language,
@@ -26,19 +32,59 @@ def get_news():
 
     if query:
         # Search overrides category/state - full related news for that keyword
-        params["q"] = query
+        base_params["q"] = query
     else:
         if category and category != "top":
-            params["category"] = category
+            base_params["category"] = category
         if state:
-            params["q"] = state
+            base_params["q"] = state
 
-    try:
-        r = requests.get(NEWSDATA_URL, params=params, timeout=12)
-        r.raise_for_status()
-        return jsonify(r.json().get("results", []))
-    except requests.exceptions.RequestException as e:
-        return jsonify({"error": str(e)}), 502
+    if from_date:
+        base_params["from_date"] = from_date
+    if to_date:
+        base_params["to_date"] = to_date
+
+    all_results = []
+    next_page = None
+    last_error = None
+
+    for _ in range(MAX_PAGES):
+        params = dict(base_params)
+        if next_page:
+            params["page"] = next_page
+
+        try:
+            r = requests.get(NEWSDATA_URL, params=params, timeout=12)
+            payload = r.json()
+        except requests.exceptions.RequestException as e:
+            last_error = str(e)
+            break
+        except ValueError:
+            last_error = "Invalid response from news provider."
+            break
+
+        if r.status_code != 200:
+            # newsdata.io puts the reason inside payload["results"]["message"] usually
+            msg = None
+            if isinstance(payload, dict):
+                results_obj = payload.get("results")
+                if isinstance(results_obj, dict):
+                    msg = results_obj.get("message")
+                msg = msg or payload.get("message")
+            last_error = msg or f"News provider returned status {r.status_code}"
+            break
+
+        results = payload.get("results") or []
+        all_results.extend(results)
+
+        next_page = payload.get("nextPage")
+        if not next_page:
+            break
+
+    if not all_results and last_error:
+        return jsonify({"error": last_error}), 502
+
+    return jsonify(all_results)
 
 
 @app.route("/api/analyze", methods=["POST"])
