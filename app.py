@@ -19,6 +19,47 @@ NEWSDATA_ARCHIVE_URL = "https://newsdata.io/api/1/archive"
 MAX_PAGES = 5
 
 
+def _fetch_pages(url, base_params):
+    """Fetch up to MAX_PAGES from newsdata.io, following nextPage. Returns (results, error_message)."""
+    all_results = []
+    next_page = None
+    last_error = None
+
+    for _ in range(MAX_PAGES):
+        params = dict(base_params)
+        if next_page:
+            params["page"] = next_page
+
+        try:
+            r = requests.get(url, params=params, timeout=12)
+            payload = r.json()
+        except requests.exceptions.RequestException as e:
+            last_error = str(e)
+            break
+        except ValueError:
+            last_error = "Invalid response from news provider."
+            break
+
+        if r.status_code != 200:
+            msg = None
+            if isinstance(payload, dict):
+                results_obj = payload.get("results")
+                if isinstance(results_obj, dict):
+                    msg = results_obj.get("message")
+                msg = msg or payload.get("message")
+            last_error = msg or f"News provider returned status {r.status_code}"
+            break
+
+        results = payload.get("results") or []
+        all_results.extend(results)
+
+        next_page = payload.get("nextPage")
+        if not next_page:
+            break
+
+    return all_results, last_error
+
+
 @app.route("/api/news")
 def get_news():
     category = request.args.get("category")
@@ -51,49 +92,34 @@ def get_news():
         base_params["to_date"] = to_date
 
     # Past dates need the archive endpoint; "today"/no-date queries use the latest-news endpoint.
-    target_url = NEWSDATA_ARCHIVE_URL if (from_date or to_date) else NEWSDATA_URL
+    used_archive = bool(from_date or to_date)
+    target_url = NEWSDATA_ARCHIVE_URL if used_archive else NEWSDATA_URL
 
-    all_results = []
-    next_page = None
-    last_error = None
+    all_results, last_error = _fetch_pages(target_url, base_params)
 
-    for _ in range(MAX_PAGES):
-        params = dict(base_params)
-        if next_page:
-            params["page"] = next_page
-
-        try:
-            r = requests.get(target_url, params=params, timeout=12)
-            payload = r.json()
-        except requests.exceptions.RequestException as e:
-            last_error = str(e)
-            break
-        except ValueError:
-            last_error = "Invalid response from news provider."
-            break
-
-        if r.status_code != 200:
-            # newsdata.io puts the reason inside payload["results"]["message"] usually
-            msg = None
-            if isinstance(payload, dict):
-                results_obj = payload.get("results")
-                if isinstance(results_obj, dict):
-                    msg = results_obj.get("message")
-                msg = msg or payload.get("message")
-            last_error = msg or f"News provider returned status {r.status_code}"
-            break
-
-        results = payload.get("results") or []
-        all_results.extend(results)
-
-        next_page = payload.get("nextPage")
-        if not next_page:
-            break
+    notice = None
+    if not all_results and last_error and used_archive:
+        lowered = last_error.lower()
+        if "upgrade" in lowered or "access denied" in lowered or "archive" in lowered:
+            # This newsdata.io plan doesn't allow the historical archive endpoint.
+            # Fall back to latest news (drop the date range) instead of showing a hard error.
+            fallback_params = dict(base_params)
+            fallback_params.pop("from_date", None)
+            fallback_params.pop("to_date", None)
+            all_results, fallback_error = _fetch_pages(NEWSDATA_URL, fallback_params)
+            if all_results:
+                notice = (
+                    "தேர்ந்தெடுத்த வருடம்/மாதத்திற்கான பழைய செய்திகளை இந்த API plan-ல் கொண்டுவர முடியல "
+                    "(Archive access தேவை) — அதற்குப் பதிலா அண்மைச் செய்திகள் காட்டப்படுகின்றன."
+                )
+                last_error = None
+            else:
+                last_error = last_error or fallback_error
 
     if not all_results and last_error:
         return jsonify({"error": last_error}), 502
 
-    return jsonify(all_results)
+    return jsonify({"results": all_results, "notice": notice})
 
 
 @app.route("/api/analyze", methods=["POST"])
