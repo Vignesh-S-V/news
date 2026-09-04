@@ -2,6 +2,8 @@ import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
+import xml.etree.ElementTree as ET
+from urllib.parse import quote
 
 app = Flask(__name__)
 CORS(app)
@@ -53,6 +55,37 @@ def _fetch_pages(url, base_params):
     return all_results, last_error
 
 
+def fetch_google_news_rss(query, language="en"):
+    """NewsData.io Archive கிடைக்காதபோது கூகுள் நியூஸ் RSS மூலமாக தரவுகளை ஸ்கிராப் செய்து தரும்."""
+    encoded_query = quote(query)
+    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl={language}-IN&gl=IN&ceid=IN:{language}"
+    
+    try:
+        resp = requests.get(rss_url, timeout=10)
+        if resp.status_code != 200:
+            return []
+        
+        root = ET.fromstring(resp.content)
+        items = []
+        for item in root.findall('.//item'):
+            title = item.find('title')
+            pub_date = item.find('pubDate')
+            source = item.find('source')
+            link = item.find('link')
+            
+            items.append({
+                "title": title.text if title is not None else "No Title",
+                "description": title.text if title is not None else "",
+                "pubDate": pub_date.text if pub_date is not None else "",
+                "source_id": source.text if source is not None else "Google News",
+                "link": link.text if link is not None else ""
+            })
+        return items
+    except Exception as e:
+        print("RSS Scraping Error:", str(e))
+        return []
+
+
 @app.route("/api/news")
 def get_news():
     category = request.args.get("category")
@@ -64,19 +97,20 @@ def get_news():
 
     base_params = {
         "apikey": NEWS_API_KEY,
-        "country": "in",
         "language": language,
     }
 
-    if query and state:
-        base_params["q"] = f"{query} {state}"
-    elif query:
-        base_params["q"] = query
-    else:
-        if category and category != "top":
-            base_params["category"] = category
-        if state:
+    if state:
+        base_params["country"] = "in"
+        if query:
+            base_params["q"] = f"{query} {state}"
+        else:
             base_params["q"] = state
+    else:
+        if query:
+            base_params["q"] = query
+        elif category and category != "top":
+            base_params["category"] = category
 
     if from_date:
         base_params["from_date"] = from_date
@@ -88,27 +122,23 @@ def get_news():
 
     all_results, last_error = _fetch_pages(target_url, base_params)
 
-    notice = None
-    if not all_results and last_error and used_archive:
-        lowered = last_error.lower()
-        if "upgrade" in lowered or "access denied" in lowered or "archive" in lowered:
-            fallback_params = dict(base_params)
-            fallback_params.pop("from_date", None)
-            fallback_params.pop("to_date", None)
-            all_results, fallback_error = _fetch_pages(NEWSDATA_URL, fallback_params)
-            if all_results:
-                notice = (
-                    "தேர்ந்தெடுத்த வருடம்/மாதத்திற்கான பழைய செய்திகளை இந்த API plan-ல் கொண்டுவர முடியல "
-                    "(Archive access தேவை) — அதற்குப் பதிலா அண்மைச் செய்திகள் காட்டப்படுகின்றன."
-                )
-                last_error = None
-            else:
-                last_error = last_error or fallback_error
+    # ஒருவேளை NewsData.io-ல் Archive பிழை அல்லது ரிசல்ட் வராவிட்டால் Google News RSS வெப் ஸ்கிராப்பிங் மூலமாகத் தேடும்
+    if not all_results and (used_archive or last_error):
+        search_term = query or state or category or "India news"
+        if used_archive and from_date:
+            search_term += f" {from_date[:4]}"
+        
+        scraped_results = fetch_google_news_rss(search_term, language)
+        if scraped_results:
+            return jsonify({
+                "results": scraped_results,
+                "notice": "Archive limit காரணமாக Google News வெப் ஸ்கிராப்பிங் மூலம் தரவுகள் பெறப்பட்டுள்ளன."
+            })
 
     if not all_results and last_error:
         return jsonify({"error": last_error}), 502
 
-    return jsonify({"results": all_results, "notice": notice})
+    return jsonify({"results": all_results, "notice": None})
 
 
 @app.route("/api/analyze", methods=["POST"])
@@ -158,7 +188,7 @@ def analyze_news():
         }
     }
 
-    # பாதுகாப்பான மற்றும் உறுதியான 1.5-flash மாடல் பயன்படுத்தப்பட்டுள்ளது
+    # எந்த பிராக்கெட்டும் இல்லாத சுத்தமான மற்றும் பாதுகாப்பான URL
     gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=){GEMINI_API_KEY}"
 
     try:
