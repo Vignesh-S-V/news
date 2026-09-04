@@ -4,15 +4,12 @@ from flask_cors import CORS
 import requests
 
 app = Flask(__name__)
-CORS(app)  # GitHub Pages-ல் இருந்து வரும் Request-ஐ அனுமதிக்கிறது
+CORS(app)
 
-# API Key-களை Environment Variables-ல் இருந்து எடுக்கிறோம் (பாதுகாப்பானது)
-# உண்மையான Key-ஐ இங்கே பேஸ்ட் செய்யக்கூடாது
-NEWS_API_KEY = os.environ.get("NEWS_API_KEY")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "").strip()
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 NEWSDATA_URL = "https://newsdata.io/api/1/news"
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={GEMINI_API_KEY}"
 
 @app.route("/api/news")
 def get_news():
@@ -31,7 +28,7 @@ def get_news():
         params["q"] = state
 
     try:
-        r = requests.get(NEWSDATA_URL, params=params, timeout=10)
+        r = requests.get(NEWSDATA_URL, params=params, timeout=12)
         r.raise_for_status()
         return jsonify(r.json().get("results", []))
     except requests.exceptions.RequestException as e:
@@ -39,33 +36,57 @@ def get_news():
 
 @app.route("/api/analyze", methods=["POST"])
 def analyze_news():
-    data = request.json
+    if not GEMINI_API_KEY:
+        return jsonify({"error": "Render Environment-ல் GEMINI_API_KEY சேர்க்கப்படவில்லை."}), 500
+
+    data = request.get_json(force=True)
     headline = data.get("title", "")
     desc = data.get("desc", "")
     date = data.get("date", "")
 
-    system_prompt = """You are a careful Indian news analyst writing for a Tamil-reading audience.
-    Given a news headline and short description, respond with ONLY a valid JSON object. Do not include markdown formatting or backticks around the JSON. The JSON must exactly match this structure:
-    {
-      "what_happened": "2-4 sentences in Tamil describing what happened",
-      "reason_science": "2-4 sentences in Tamil explaining the causes or background",
-      "expert_view": "2-3 sentences in Tamil summarizing expert views",
-      "future_outlook": "2-3 sentences in Tamil on future implications"
-    }"""
-    
-    user_prompt = f"Headline: {headline}\nDescription: {desc}\nDate: {date}"
+    # நீங்கள் கேட்ட 4 ஆழமான அம்சங்களுக்கான Prompt
+    system_prompt = (
+        "You are an expert investigative journalist and scientist writing in rich, clear Tamil. "
+        "Analyze the provided news item and respond ONLY with a valid raw JSON object (no markdown, no ```json). "
+        "Strictly use these 4 keys:\n"
+        "1. 'what_happened': 3-4 sentences in Tamil explaining the event in detail.\n"
+        "2. 'past_history': 3-4 sentences in Tamil detailing where and when similar incidents have happened previously in India or worldwide.\n"
+        "3. 'scientific_reasons': 3-4 sentences in Tamil covering scientific causes, facts, and what scientists/experts say.\n"
+        "4. 'future_outlook': 2-3 sentences in Tamil on whether this could happen again, future risks, and prevention."
+    )
+
+    user_prompt = f"Headline: {headline}\nDetails: {desc}\nDate: {date}"
 
     payload = {
-        "contents": [{"parts": [{"text": system_prompt + "\n\n" + user_prompt}]}]
+        "contents": [
+            {
+                "parts": [
+                    {"text": f"{system_prompt}\n\n{user_prompt}"}
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 1200
+        }
     }
 
+    gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=){GEMINI_API_KEY}"
+
     try:
-        r = requests.post(GEMINI_URL, json=payload, headers={"Content-Type": "application/json"})
-        r.raise_for_status()
-        gemini_response = r.json()
-        text_result = gemini_response["candidates"][0]["content"]["parts"][0]["text"]
-        return jsonify({"analysis": text_result})
+        resp = requests.post(gemini_url, json=payload, headers={"Content-Type": "application/json"}, timeout=20)
+        
+        # ஏதேனும் பிழை வந்தால் Render Logs-ல் பார்க்க ஏதுவாக
+        if resp.status_code != 200:
+            print("Gemini API Error:", resp.text)
+            return jsonify({"error": f"Gemini Error ({resp.status_code}): {resp.text}"}), resp.status_code
+        
+        res_json = resp.json()
+        raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
+        return jsonify({"analysis": raw_text})
+        
     except Exception as e:
+        print("Backend Error:", str(e))
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
