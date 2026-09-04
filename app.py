@@ -9,18 +9,11 @@ CORS(app)
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 NEWSDATA_URL = "https://newsdata.io/api/1/news"
-# newsdata.io only returns older/date-ranged results from this endpoint.
-# NOTE: the archive endpoint needs a paid newsdata.io plan — on the free plan
-# this will return a plan-upgrade error from the provider, which is not a code bug.
 NEWSDATA_ARCHIVE_URL = "https://newsdata.io/api/1/archive"
 
-# newsdata.io free plan gives 10 articles per page.
-# We auto-paginate up to MAX_PAGES so the frontend gets more than just 10.
 MAX_PAGES = 5
 
-
 def _fetch_pages(url, base_params):
-    """Fetch up to MAX_PAGES from newsdata.io, following nextPage. Returns (results, error_message)."""
     all_results = []
     next_page = None
     last_error = None
@@ -76,7 +69,6 @@ def get_news():
     }
 
     if query and state:
-        # combine free-text search with a state name so both narrow the results together
         base_params["q"] = f"{query} {state}"
     elif query:
         base_params["q"] = query
@@ -91,7 +83,6 @@ def get_news():
     if to_date:
         base_params["to_date"] = to_date
 
-    # Past dates need the archive endpoint; "today"/no-date queries use the latest-news endpoint.
     used_archive = bool(from_date or to_date)
     target_url = NEWSDATA_ARCHIVE_URL if used_archive else NEWSDATA_URL
 
@@ -101,8 +92,6 @@ def get_news():
     if not all_results and last_error and used_archive:
         lowered = last_error.lower()
         if "upgrade" in lowered or "access denied" in lowered or "archive" in lowered:
-            # This newsdata.io plan doesn't allow the historical archive endpoint.
-            # Fall back to latest news (drop the date range) instead of showing a hard error.
             fallback_params = dict(base_params)
             fallback_params.pop("from_date", None)
             fallback_params.pop("to_date", None)
@@ -131,7 +120,7 @@ def analyze_news():
     headline = data.get("title", "")
     desc = data.get("desc", "")
     date = data.get("date", "")
-    focus = data.get("focus")  # optional: "india_economic_impact"
+    focus = data.get("focus")
 
     extra_key = ""
     if focus == "india_economic_impact":
@@ -169,10 +158,8 @@ def analyze_news():
         }
     }
 
-    gemini_url = (
-        f"https://generativelanguage.googleapis.com"
-        f"/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
-    )
+    # பாதுகாப்பான மற்றும் உறுதியான 1.5-flash மாடல் பயன்படுத்தப்பட்டுள்ளது
+    gemini_url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=){GEMINI_API_KEY}"
 
     try:
         resp = requests.post(gemini_url, json=payload, headers={"Content-Type": "application/json"}, timeout=20)
