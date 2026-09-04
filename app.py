@@ -72,10 +72,9 @@ def analyze_news():
     }
 
     # FIX: plain URL string (not markdown link), and current model name
-    # gemini-1.5-flash was retired by Google — using gemini-2.5-flash instead
     gemini_url = (
         f"https://generativelanguage.googleapis.com"
-        f"/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        f"/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
     )
 
     try:
