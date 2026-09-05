@@ -286,7 +286,7 @@ def get_news():
         filtered.sort(key=_pub_date_sort_key, reverse=True)
         notice = ""
     else:
-        notice = f"{len(filtered)} செய்திகள் — தொடர்ச்சியான web-scraping cache-ல் இருந்து, தேதி வாரியாக சீரமைக்கப்பட்டவை."
+        notice = f"{len(filtered)} News"
 
     return jsonify({"results": filtered, "notice": notice})
 
