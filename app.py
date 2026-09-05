@@ -1,4 +1,7 @@
 import os
+import time
+import threading
+from email.utils import parsedate_to_datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
@@ -13,7 +16,8 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 NEWSDATA_URL = "https://newsdata.io/api/1/latest"
 NEWSDATA_ARCHIVE_URL = "https://newsdata.io/api/1/archive"
 
-MAX_PAGES = 5
+MAX_PAGES = 10
+
 
 def _fetch_pages(url, base_params):
     all_results = []
@@ -55,8 +59,17 @@ def _fetch_pages(url, base_params):
     return all_results, last_error
 
 
+def _pub_date_sort_key(item):
+    """எடுக்கக்கூடிய அளவுக்கு அசல் publish நேரத்தை sort key ஆக மாற்றும் (parse தோல்வியுற்றால் மிகப் பழையதாகக் கருதப்படும்)."""
+    raw = item.get("pubDate", "")
+    try:
+        return parsedate_to_datetime(raw).timestamp()
+    except Exception:
+        return 0
+
+
 def fetch_google_news_rss(query, language="en"):
-    """NewsData.io Archive கிடைக்காதபோது கூகுள் நியூஸ் RSS மூலமாக தரவுகளை ஸ்கிராப் செய்து தரும்."""
+    """கொடுக்கப்பட்ட query-க்கு Google News RSS மூலமாக நேரடியாக செய்திகளை ஸ்கிராப் செய்து தரும்."""
     encoded_query = quote(query)
     rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl={language}-IN&gl=IN&ceid=IN:{language}"
 
@@ -86,6 +99,119 @@ def fetch_google_news_rss(query, language="en"):
         return []
 
 
+# ---------------------------------------------------------------------------
+# Continuous background web-scraper + request-triggered refresh
+# (Render free-tier instances sleep when idle, killing background threads,
+#  so we ALSO refresh opportunistically whenever a real request comes in.)
+# ---------------------------------------------------------------------------
+
+SCRAPE_CATEGORY_QUERIES = {
+    "top": ["India news", "India latest news", "India headlines today"],
+    "politics": ["India politics", "India parliament", "India government policy"],
+    "business": ["India business economy", "India stock market", "RBI India economy", "India startup funding"],
+    "sports": ["India sports", "India cricket", "Indian Premier League", "India Olympics"],
+    "technology": ["India technology", "India startup tech", "India AI news", "India smartphone launch"],
+    "environment": ["India environment climate", "India pollution", "India monsoon", "India wildlife"],
+    "world": ["world news", "world economy", "international politics today"],
+}
+
+SCRAPE_STATE_NAMES = [
+    "Tamil Nadu", "Kerala", "Karnataka", "Andhra Pradesh",
+    "Delhi", "Maharashtra", "Gujarat", "West Bengal",
+]
+
+SCRAPE_LANGUAGES = ["en", "ta"]
+SCRAPE_INTERVAL_SECONDS = 300  # 5 minutes
+STORE_MAX_ITEMS = 6000
+
+NEWS_STORE = []                 # accumulated scraped articles
+NEWS_STORE_LOCK = threading.Lock()
+SEEN_LINKS = set()
+
+_last_scrape_started_at = 0.0
+_scrape_in_progress = False
+_scrape_trigger_lock = threading.Lock()
+
+
+def _scrape_one_cycle():
+    new_items = []
+
+    for lang in SCRAPE_LANGUAGES:
+        for cat_key, queries in SCRAPE_CATEGORY_QUERIES.items():
+            for q in queries:
+                items = fetch_google_news_rss(q, lang)
+                for it in items:
+                    it["category"] = cat_key
+                    it["language"] = lang
+                new_items.extend(items)
+
+        for st in SCRAPE_STATE_NAMES:
+            items = fetch_google_news_rss(st, lang)
+            for it in items:
+                it["category"] = "top"
+                it["language"] = lang
+            new_items.extend(items)
+
+    with NEWS_STORE_LOCK:
+        for it in new_items:
+            link = it.get("link") or it.get("title")
+            if not link or link in SEEN_LINKS:
+                continue
+            SEEN_LINKS.add(link)
+            NEWS_STORE.append(it)
+
+        NEWS_STORE.sort(key=_pub_date_sort_key, reverse=True)
+
+        if len(NEWS_STORE) > STORE_MAX_ITEMS:
+            removed = NEWS_STORE[STORE_MAX_ITEMS:]
+            del NEWS_STORE[STORE_MAX_ITEMS:]
+            for r in removed:
+                SEEN_LINKS.discard(r.get("link") or r.get("title"))
+
+    print(f"[scraper] cycle complete. store size = {len(NEWS_STORE)}")
+
+
+def _run_scrape_cycle_guarded():
+    global _scrape_in_progress
+    try:
+        _scrape_one_cycle()
+    except Exception as e:
+        print("[scraper] error:", str(e))
+    finally:
+        with _scrape_trigger_lock:
+            _scrape_in_progress = False
+
+
+def _maybe_trigger_refresh():
+    """Request வரும்போது cache பழசா இருந்தா (5 நிமிடத்துக்கு மேல்), ஒரு background
+    refresh-ஐ non-blocking-ஆ ஆரம்பிக்கும். இது Render free-tier sleep காரணமாக
+    background thread நின்றுபோனாலும், traffic வரும்போதே cache புதுப்பிக்க உதவும்."""
+    global _last_scrape_started_at, _scrape_in_progress
+
+    now = time.time()
+    with _scrape_trigger_lock:
+        if _scrape_in_progress:
+            return
+        if now - _last_scrape_started_at < SCRAPE_INTERVAL_SECONDS and NEWS_STORE:
+            return
+        _scrape_in_progress = True
+        _last_scrape_started_at = now
+
+    threading.Thread(target=_run_scrape_cycle_guarded, daemon=True).start()
+
+
+def _scrape_loop():
+    """Server தூங்காம continuous-ஆ ஓடினா (paid plan / uptime-pinger வச்சிருந்தா),
+    இந்த loop-உம் regular-ஆ refresh பண்ணிக்கொண்டே இருக்கும்."""
+    while True:
+        _maybe_trigger_refresh()
+        time.sleep(SCRAPE_INTERVAL_SECONDS)
+
+
+_scraper_thread = threading.Thread(target=_scrape_loop, daemon=True)
+_scraper_thread.start()
+
+
 @app.route("/api/news")
 def get_news():
     category = request.args.get("category")
@@ -95,49 +221,74 @@ def get_news():
     from_date = request.args.get("from_date")
     to_date = request.args.get("to_date")
 
-    base_params = {
-        "apikey": NEWS_API_KEY,
-        "language": language,
-    }
-
-    if category and category != "top":
-        base_params["category"] = category
-
-    if state:
-        base_params["country"] = "in"
-        if query:
-            base_params["q"] = f"{query} {state}"
-        else:
-            base_params["q"] = state
-    elif query:
-        base_params["q"] = query
-
-    if from_date:
+    # ---- Date-range archive search still goes through NewsData.io ----
+    if from_date or to_date:
+        base_params = {"apikey": NEWS_API_KEY, "language": language}
+        if category and category != "top":
+            base_params["category"] = category
+        if state:
+            base_params["country"] = "in"
+            base_params["q"] = f"{query} {state}" if query else state
+        elif query:
+            base_params["q"] = query
         base_params["from_date"] = from_date
-    if to_date:
         base_params["to_date"] = to_date
 
-    used_archive = bool(from_date or to_date)
-    target_url = NEWSDATA_ARCHIVE_URL if used_archive else NEWSDATA_URL
+        all_results, last_error = _fetch_pages(NEWSDATA_ARCHIVE_URL, base_params)
 
-    all_results, last_error = _fetch_pages(target_url, base_params)
-
-    if not all_results and (used_archive or last_error):
-        search_term = query or state or category or "India news"
-        if used_archive and from_date:
+        if not all_results and last_error:
+            search_term = query or state or category or "India news"
             search_term += f" {from_date[:4]}"
+            scraped_results = fetch_google_news_rss(search_term, language)
+            if scraped_results:
+                return jsonify({
+                    "results": scraped_results,
+                    "notice": "Archive limit காரணமாக Google News வெப் ஸ்கிராப்பிங் மூலம் தரவுகள் பெறப்பட்டுள்ளன."
+                })
+            return jsonify({"error": last_error}), 502
 
-        scraped_results = fetch_google_news_rss(search_term, language)
-        if scraped_results:
-            return jsonify({
-                "results": scraped_results,
-                "notice": "Archive limit காரணமாக Google News வெப் ஸ்கிராப்பிங் மூலம் தரவுகள் பெறப்பட்டுள்ளன."
-            })
+        return jsonify({"results": all_results, "notice": None})
 
-    if not all_results and last_error:
-        return jsonify({"error": last_error}), 502
+    # Every normal browsing/search request also nudges the cache to refresh
+    # if it's stale — this is what keeps news current even on Render free tier.
+    _maybe_trigger_refresh()
 
-    return jsonify({"results": all_results, "notice": None})
+    # ---- Free-text search: scrape live for exactly this query ----
+    if query:
+        search_term = f"{query} {state}" if state else query
+        live_results = fetch_google_news_rss(search_term, language)
+        live_results.sort(key=_pub_date_sort_key, reverse=True)
+        return jsonify({
+            "results": live_results,
+            "notice": "Google News வெப் ஸ்கிராப்பிங் மூலம் நேரடியாகப் பெறப்பட்ட முடிவுகள்."
+        })
+
+    # ---- Category / state browsing: serve from the continuously-updated cache ----
+    with NEWS_STORE_LOCK:
+        pool = list(NEWS_STORE)
+
+    def matches(item):
+        if item.get("language") != language:
+            return False
+        if category and category != "top" and item.get("category") != category:
+            return False
+        if state:
+            haystack = (item.get("title", "") + " " + item.get("description", "")).lower()
+            if state.lower() not in haystack:
+                return False
+        return True
+
+    filtered = [it for it in pool if matches(it)]
+
+    if not filtered:
+        search_term = state or (category if category and category != "top" else "India news")
+        filtered = fetch_google_news_rss(search_term, language)
+        filtered.sort(key=_pub_date_sort_key, reverse=True)
+        notice = "Cache இன்னும் தயார் இல்லை (server new-ஆ start ஆனது) — சிறிது நேரம் கழித்து மறுபடி பாருங்கள், முழு cache நிரம்பும்."
+    else:
+        notice = f"{len(filtered)} செய்திகள் — தொடர்ச்சியான web-scraping cache-ல் இருந்து, தேதி வாரியாக சீரமைக்கப்பட்டவை."
+
+    return jsonify({"results": filtered, "notice": notice})
 
 
 @app.route("/api/analyze", methods=["POST"])
@@ -187,7 +338,6 @@ def analyze_news():
         }
     }
 
-    # எந்த பிராக்கெட்டும் இல்லாத சுத்தமான மற்றும் பாதுகாப்பான URL (indentation சரி செய்யப்பட்டது)
     gemini_url = (
         f"https://generativelanguage.googleapis.com"
         f"/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
