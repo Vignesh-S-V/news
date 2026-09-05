@@ -416,7 +416,47 @@ def get_news():
                 "notice": f"{len(filtered)} News"
             })
 
-        # Cache has nothing for that period — try NewsData Archive as a last resort
+        # Cache (NEWS_STORE) came up empty for this period — most likely because
+        # Render's free tier put the process to sleep/restarted it, wiping the
+        # in-memory store, rather than because no news actually exists for this
+        # range. Before reaching for the paid/limited archive APIs, do a FRESH
+        # live scrape right now and filter it by each article's real pubDate.
+        # Google News RSS returns genuine pubDate values, so this reliably
+        # covers "no data" cases for anything from the last few weeks even on
+        # a cold/just-restarted instance.
+        live_search_terms = []
+        if category and category != "top" and category in SCRAPE_CATEGORY_QUERIES:
+            live_search_terms.extend(SCRAPE_CATEGORY_QUERIES[category])
+        else:
+            live_search_terms.append(query or state or "India news")
+
+        live_items = []
+        seen_live_keys = set()
+        for term in live_search_terms:
+            full_term = f"{term} {state}" if state else term
+            for it in fetch_google_news_rss(full_term, language):
+                key = it.get("link") or it.get("title")
+                if not key or key in seen_live_keys:
+                    continue
+                seen_live_keys.add(key)
+                live_items.append(it)
+
+        live_in_range = [it for it in live_items if in_date_range(it)]
+        if query:
+            needle = query.lower()
+            live_in_range = [
+                it for it in live_in_range
+                if needle in (it.get("title", "") + " " + it.get("description", "")).lower()
+            ]
+
+        if live_in_range:
+            live_in_range.sort(key=_pub_date_sort_key, reverse=True)
+            return jsonify({
+                "results": live_in_range,
+                "notice": f"{len(live_in_range)} News"
+            })
+
+        # Still nothing — try NewsData Archive as a further fallback
         # (works only if your NewsData.io plan includes archive access).
         base_params = {"apikey": NEWS_API_KEY, "language": language}
         if category and category != "top":
