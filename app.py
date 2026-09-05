@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import threading
 from email.utils import parsedate_to_datetime
@@ -256,6 +257,58 @@ _last_scrape_started_at = 0.0
 _scrape_in_progress = False
 _scrape_trigger_lock = threading.Lock()
 
+# ---------------------------------------------------------------------------
+# Disk persistence for NEWS_STORE. Render's free tier puts the process to
+# sleep on inactivity and can restart the same container, which wipes any
+# plain in-memory list. Saving the store to a JSON file next to this script
+# (and reloading it on startup) means the accumulated cache survives those
+# sleep/restart cycles instead of resetting to empty every time — this is
+# what lets the store genuinely build up to 1000+ items over hours/days
+# instead of relying only on a single live scrape per request.
+# NOTE: this survives sleep/restart of the SAME container instance. A fresh
+# deploy (new container / new disk) will still start from an empty file.
+# ---------------------------------------------------------------------------
+NEWS_STORE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "news_store_cache.json")
+_STORE_SAVE_LOCK = threading.Lock()
+
+
+def _save_news_store():
+    """தற்போதைய NEWS_STORE-ஐ disk-ல JSON ஆக எழுதும் (atomic write, temp file வழியா)."""
+    try:
+        with NEWS_STORE_LOCK:
+            snapshot = list(NEWS_STORE)
+        with _STORE_SAVE_LOCK:
+            tmp_path = NEWS_STORE_FILE + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, ensure_ascii=False)
+            os.replace(tmp_path, NEWS_STORE_FILE)
+    except Exception as e:
+        print("[persist] save error:", str(e))
+
+
+def _load_news_store():
+    """Startup-ல disk-ல் இருந்து முந்தைய cache-ஐ (இருந்தால்) மீண்டும் ஏற்றும்."""
+    global NEWS_STORE, SEEN_LINKS
+    try:
+        if not os.path.exists(NEWS_STORE_FILE):
+            print("[persist] no existing cache file — starting fresh")
+            return
+        with open(NEWS_STORE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            return
+        with NEWS_STORE_LOCK:
+            NEWS_STORE.clear()
+            NEWS_STORE.extend(data)
+            SEEN_LINKS.clear()
+            for it in NEWS_STORE:
+                key = it.get("link") or it.get("title")
+                if key:
+                    SEEN_LINKS.add(key)
+        print(f"[persist] loaded {len(NEWS_STORE)} items from disk cache")
+    except Exception as e:
+        print("[persist] load error (starting fresh):", str(e))
+
 
 def _scrape_one_cycle():
     new_items = []
@@ -293,6 +346,7 @@ def _scrape_one_cycle():
                 SEEN_LINKS.discard(r.get("link") or r.get("title"))
 
     print(f"[scraper] cycle complete. store size = {len(NEWS_STORE)}")
+    _save_news_store()
 
 
 def _run_scrape_cycle_guarded():
@@ -331,6 +385,8 @@ def _scrape_loop():
         _maybe_trigger_refresh()
         time.sleep(SCRAPE_INTERVAL_SECONDS)
 
+
+_load_news_store()  # restore cache from disk (if any) before scraping starts
 
 _scraper_thread = threading.Thread(target=_scrape_loop, daemon=True)
 _scraper_thread.start()
@@ -424,11 +480,29 @@ def get_news():
         # Google News RSS returns genuine pubDate values, so this reliably
         # covers "no data" cases for anything from the last few weeks even on
         # a cold/just-restarted instance.
-        live_search_terms = []
-        if category and category != "top" and category in SCRAPE_CATEGORY_QUERIES:
-            live_search_terms.extend(SCRAPE_CATEGORY_QUERIES[category])
+        if query:
+            # Specific keyword search — that single term IS the request, no
+            # need to widen it.
+            live_search_terms = [query]
+        elif category and category != "top" and category in SCRAPE_CATEGORY_QUERIES:
+            # A specific category was asked for — use that category's full
+            # query set (already several terms, e.g. business/sports/etc).
+            live_search_terms = list(SCRAPE_CATEGORY_QUERIES[category])
+        elif state:
+            # A specific state was asked for — pair it with the general "top"
+            # queries so we still sweep more than one RSS page for it.
+            live_search_terms = [state] + list(SCRAPE_CATEGORY_QUERIES["top"])
         else:
-            live_search_terms.append(query or state or "India news")
+            # No category/state/query filter — this is a broad "top news for
+            # this date range" request. A single query here is what was
+            # collapsing results to ~100 items; instead mirror the breadth of
+            # the full background scrape cycle by sweeping EVERY category's
+            # queries, then dedup by link. This is what lets a month-wide
+            # request come back with hundreds+ of real, date-matching items
+            # instead of ~100.
+            live_search_terms = []
+            for queries in SCRAPE_CATEGORY_QUERIES.values():
+                live_search_terms.extend(queries)
 
         live_items = []
         seen_live_keys = set()
