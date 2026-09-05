@@ -131,7 +131,7 @@ def get_news():
         if scraped_results:
             return jsonify({
                 "results": scraped_results,
-                "notice": "Archive limit காரணமாக Google News வெப் ஸ்கிராப்பிங் மூலம் தரவுகள் பெறப்பட்டுள்ளன."
+                "notice": ""
             })
 
     if not all_results and last_error:
