@@ -2,6 +2,8 @@ import os
 import time
 import threading
 from email.utils import parsedate_to_datetime
+from datetime import datetime as _dt_module
+from html.parser import HTMLParser
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
@@ -60,12 +62,21 @@ def _fetch_pages(url, base_params):
 
 
 def _pub_date_sort_key(item):
-    """எடுக்கக்கூடிய அளவுக்கு அசல் publish நேரத்தை sort key ஆக மாற்றும் (parse தோல்வியுற்றால் மிகப் பழையதாகக் கருதப்படும்)."""
+    """எடுக்கக்கூடிய அளவுக்கு அசல் publish நேரத்தை sort key ஆக மாற்றும் (parse தோல்வியுற்றால் 0)."""
     raw = item.get("pubDate", "")
+    if not raw:
+        return 0
     try:
         return parsedate_to_datetime(raw).timestamp()
     except Exception:
-        return 0
+        pass
+    from datetime import datetime as _dt_fallback, timezone as _tz_fallback
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return _dt_fallback.strptime(raw[:19], fmt).replace(tzinfo=_tz_fallback.utc).timestamp()
+        except Exception:
+            continue
+    return 0
 
 
 def fetch_google_news_rss(query, language="en"):
@@ -97,6 +108,119 @@ def fetch_google_news_rss(query, language="en"):
     except Exception as e:
         print("RSS Scraping Error:", str(e))
         return []
+
+
+# ---------------------------------------------------------------------------
+# Wayback Machine (archive.org) fallback for old dates that our live
+# web-scraping cache cannot cover. Best-effort: real historical headlines
+# extracted from an archived snapshot closest to the requested date — never
+# invented content, but coverage/accuracy depends on what archive.org has.
+# ---------------------------------------------------------------------------
+
+WAYBACK_AVAILABLE_URL = "https://archive.org/wayback/available"
+
+WAYBACK_SOURCE_PAGES = {
+    "top": "https://timesofindia.indiatimes.com",
+    "politics": "https://timesofindia.indiatimes.com/india",
+    "business": "https://economictimes.indiatimes.com",
+    "sports": "https://timesofindia.indiatimes.com/sports",
+    "technology": "https://timesofindia.indiatimes.com/technology",
+    "environment": "https://timesofindia.indiatimes.com/environment",
+    "world": "https://timesofindia.indiatimes.com/world",
+}
+
+
+class _HeadlineLinkExtractor(HTMLParser):
+    """ஒரு archived HTML page-ல் இருந்து headline-மாதிரி <a> links-ஐ heuristic-ஆக
+    extract செய்யும் (real text-ஐ மட்டும் எடுக்கும், எதுவும் உருவாக்காது)."""
+
+    def __init__(self):
+        super().__init__()
+        self.items = []
+        self._current_href = None
+        self._current_text = []
+        self._in_a = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self._in_a = True
+            self._current_href = dict(attrs).get("href", "")
+            self._current_text = []
+
+    def handle_data(self, data):
+        if self._in_a:
+            self._current_text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self._in_a:
+            text = " ".join(self._current_text).strip()
+            text = " ".join(text.split())
+            if 35 <= len(text) <= 180 and self._current_href:
+                self.items.append((text, self._current_href))
+            self._in_a = False
+            self._current_href = None
+            self._current_text = []
+
+
+def _wayback_nearest_snapshot(url, target_date):
+    """archive.org-ன் 'available' API மூலமாக, கொடுக்கப்பட்ட தேதிக்கு நெருக்கமான
+    snapshot URL-ஐயும் அதன் actual தேதியையும் திருப்பும். கிடைக்கவில்லை என்றால் (None, None)."""
+    timestamp = target_date.strftime("%Y%m%d")
+    try:
+        resp = requests.get(
+            WAYBACK_AVAILABLE_URL,
+            params={"url": url, "timestamp": timestamp},
+            timeout=12
+        )
+        data = resp.json()
+        closest = (data.get("archived_snapshots") or {}).get("closest")
+        if not closest or not closest.get("available"):
+            return None, None
+        snap_url = closest.get("url")
+        snap_ts = closest.get("timestamp")
+        snap_date = _dt_module.strptime(snap_ts[:8], "%Y%m%d").date() if snap_ts else None
+        return snap_url, snap_date
+    except Exception as e:
+        print("[wayback] availability error:", str(e))
+        return None, None
+
+
+def fetch_wayback_headlines(source_url, target_date, max_items=25):
+    """ஒரு target date-க்கு நெருக்கமான archived snapshot-ஐ எடுத்து, அதிலிருந்த
+    real headline links-ஐ extract செய்து news-item dicts ஆகத் திருப்பும்."""
+    snap_url, snap_date = _wayback_nearest_snapshot(source_url, target_date)
+    if not snap_url:
+        return [], None
+
+    try:
+        resp = requests.get(snap_url, timeout=15)
+        if resp.status_code != 200:
+            return [], snap_date
+        parser = _HeadlineLinkExtractor()
+        parser.feed(resp.text)
+    except Exception as e:
+        print("[wayback] fetch/parse error:", str(e))
+        return [], snap_date
+
+    seen_texts = set()
+    items = []
+    pub_date_str = snap_date.strftime("%Y-%m-%d") if snap_date else ""
+    for text, href in parser.items:
+        if text in seen_texts:
+            continue
+        seen_texts.add(text)
+        link = href if href.startswith("http") else source_url.rstrip("/") + "/" + href.lstrip("/")
+        items.append({
+            "title": text,
+            "description": text,
+            "pubDate": pub_date_str,
+            "source_id": "Wayback Archive (archive.org)",
+            "link": link,
+        })
+        if len(items) >= max_items:
+            break
+
+    return items, snap_date
 
 
 # ---------------------------------------------------------------------------
@@ -236,8 +360,64 @@ def get_news():
     from_date = request.args.get("from_date")
     to_date = request.args.get("to_date")
 
-    # ---- Date-range archive search still goes through NewsData.io ----
+    # ---- Date-range search: filter from OUR OWN scraped cache by actual pubDate ----
+    # (NewsData.io's Archive endpoint needs a paid plan, and a plain Google News
+    #  scrape ignores the date entirely — so we filter real pubDate values instead.)
     if from_date or to_date:
+        try:
+            fy, fm, fd = (int(x) for x in from_date.split("-")) if from_date else (None, None, None)
+        except Exception:
+            fy = fm = fd = None
+        try:
+            ty, tm, td = (int(x) for x in to_date.split("-")) if to_date else (None, None, None)
+        except Exception:
+            ty = tm = td = None
+
+        from datetime import date as _date, timezone as _tz, datetime as _dt
+
+        from_bound = _date(fy, fm, fd) if fy else None
+        to_bound = _date(ty, tm, td) if ty else None
+
+        with NEWS_STORE_LOCK:
+            pool = list(NEWS_STORE)
+
+        def in_date_range(item):
+            ts = _pub_date_sort_key(item)
+            if not ts:
+                return False
+            item_date = _dt.fromtimestamp(ts, tz=_tz.utc).date()
+            if from_bound and item_date < from_bound:
+                return False
+            if to_bound and item_date > to_bound:
+                return False
+            return True
+
+        def matches_all(item):
+            if item.get("language") != language:
+                return False
+            if category and category != "top" and item.get("category") != category:
+                return False
+            if state:
+                haystack = (item.get("title", "") + " " + item.get("description", "")).lower()
+                if state.lower() not in haystack:
+                    return False
+            if query:
+                haystack = (item.get("title", "") + " " + item.get("description", "")).lower()
+                if query.lower() not in haystack:
+                    return False
+            return in_date_range(item)
+
+        filtered = [it for it in pool if matches_all(it)]
+        filtered.sort(key=_pub_date_sort_key, reverse=True)
+
+        if filtered:
+            return jsonify({
+                "results": filtered,
+                "notice": f"{len(filtered)} News"
+            })
+
+        # Cache has nothing for that period — try NewsData Archive as a last resort
+        # (works only if your NewsData.io plan includes archive access).
         base_params = {"apikey": NEWS_API_KEY, "language": language}
         if category and category != "top":
             base_params["category"] = category
@@ -249,20 +429,81 @@ def get_news():
         base_params["from_date"] = from_date
         base_params["to_date"] = to_date
 
-        all_results, last_error = _fetch_pages(NEWSDATA_ARCHIVE_URL, base_params)
+        archive_results, archive_error = _fetch_pages(NEWSDATA_ARCHIVE_URL, base_params)
 
-        if not all_results and last_error:
-            search_term = query or state or category or "India news"
-            search_term += f" {from_date[:4]}"
-            scraped_results = fetch_google_news_rss(search_term, language)
-            if scraped_results:
-                return jsonify({
-                    "results": scraped_results,
-                    "notice": ""
-                })
-            return jsonify({"error": last_error}), 502
+        # NewsData.io's Archive endpoint can silently ignore from_date/to_date on
+        # some plans and just return generic recent results — so we double-check
+        # every item's own pubDate before trusting it.
+        archive_in_range = [it for it in archive_results if in_date_range(it)]
 
-        return jsonify({"results": all_results, "notice": None})
+        if archive_in_range:
+            archive_in_range.sort(key=_pub_date_sort_key, reverse=True)
+            return jsonify({"results": archive_in_range, "notice": None})
+
+        # Nothing in our cache AND NewsData Archive for this exact period.
+        today = _dt.now(tz=_tz.utc).date()
+        range_start = from_bound or to_bound
+        is_future_request = bool(range_start) and range_start > today
+
+        if is_future_request:
+            return jsonify({
+                "results": [],
+                "notice": "எதிர்கால தேதிகளுக்கான செய்திகள் இன்னும் நடக்கவில்லை — எதுவும் காட்ட முடியாது."
+            })
+
+        # Past date, no exact cache/archive match: try a REAL Wayback Machine
+        # snapshot of a relevant Indian news homepage close to that date.
+        target_date_for_snapshot = from_bound or to_bound or today
+        source_url = WAYBACK_SOURCE_PAGES.get(category or "top", WAYBACK_SOURCE_PAGES["top"])
+        wayback_items, snap_date = fetch_wayback_headlines(source_url, target_date_for_snapshot)
+
+        if (query or state) and wayback_items:
+            needle = (query or state).lower()
+            wayback_items = [it for it in wayback_items if needle in it["title"].lower()]
+
+        if wayback_items:
+            snap_label = snap_date.strftime("%d-%m-%Y") if snap_date else "தெரியவில்லை"
+            return jsonify({
+                "results": wayback_items,
+                "notice": (
+                    ""
+                )
+            })
+
+        # Past date with no exact match: never fabricate news for a date we don't
+        # have — instead, show the closest REAL cached news we do have (same
+        # category/state/query, ignoring the date), clearly labelled as such.
+        def matches_no_date(item):
+            if item.get("language") != language:
+                return False
+            if category and category != "top" and item.get("category") != category:
+                return False
+            if state:
+                haystack = (item.get("title", "") + " " + item.get("description", "")).lower()
+                if state.lower() not in haystack:
+                    return False
+            if query:
+                haystack = (item.get("title", "") + " " + item.get("description", "")).lower()
+                if query.lower() not in haystack:
+                    return False
+            return True
+
+        nearest = [it for it in pool if matches_no_date(it)]
+        nearest.sort(key=_pub_date_sort_key, reverse=True)
+        nearest = nearest[:30]
+
+        if nearest:
+            return jsonify({
+                "results": nearest,
+                "notice": (
+                    ""
+                )
+            })
+
+        return jsonify({
+            "results": [],
+            "notice": ""
+        })
 
     # Every normal browsing/search request also nudges the cache to refresh
     # if it's stale — this is what keeps news current even on Render free tier.
@@ -363,7 +604,7 @@ def analyze_news():
         ],
         "generationConfig": {
             "temperature": 0.3,
-            "maxOutputTokens": 5000
+            "maxOutputTokens": 8000
         }
     }
 
