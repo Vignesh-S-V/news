@@ -16,7 +16,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 NEWSDATA_URL = "https://newsdata.io/api/1/latest"
 NEWSDATA_ARCHIVE_URL = "https://newsdata.io/api/1/archive"
 
-MAX_PAGES = 10
+MAX_PAGES = 5
 
 
 def _fetch_pages(url, base_params):
@@ -60,7 +60,7 @@ def _fetch_pages(url, base_params):
 
 
 def _pub_date_sort_key(item):
-   
+    """எடுக்கக்கூடிய அளவுக்கு அசல் publish நேரத்தை sort key ஆக மாற்றும் (parse தோல்வியுற்றால் மிகப் பழையதாகக் கருதப்படும்)."""
     raw = item.get("pubDate", "")
     try:
         return parsedate_to_datetime(raw).timestamp()
@@ -212,6 +212,30 @@ _scraper_thread = threading.Thread(target=_scrape_loop, daemon=True)
 _scraper_thread.start()
 
 
+@app.route("/api/scrape-now")
+def scrape_now():
+    """Keep-alive ping (GitHub Actions / cron-job.org) இதை நேரடியாக call பண்ணும்.
+    இது BLOCKING-ஆ இயங்கும் — request முடியும் வரை Render container awake-ஆ
+    இருக்கும், அதனால் full scrape cycle நடு-வழியில் நிறுத்தப்படாது."""
+    global _scrape_in_progress, _last_scrape_started_at
+
+    with _scrape_trigger_lock:
+        if _scrape_in_progress:
+            return jsonify({"status": "already running", "store_size": len(NEWS_STORE)})
+        _scrape_in_progress = True
+        _last_scrape_started_at = time.time()
+
+    try:
+        _scrape_one_cycle()
+    except Exception as e:
+        print("[scraper] error:", str(e))
+    finally:
+        with _scrape_trigger_lock:
+            _scrape_in_progress = False
+
+    return jsonify({"status": "done", "store_size": len(NEWS_STORE)})
+
+
 @app.route("/api/news")
 def get_news():
     category = request.args.get("category")
@@ -286,7 +310,7 @@ def get_news():
         filtered.sort(key=_pub_date_sort_key, reverse=True)
         notice = ""
     else:
-        notice = f"{len(filtered)} News"
+        notice = f"{len(filtered)} செய்திகள்"
 
     return jsonify({"results": filtered, "notice": notice})
 
