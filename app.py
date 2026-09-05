@@ -214,26 +214,17 @@ _scraper_thread.start()
 
 @app.route("/api/scrape-now")
 def scrape_now():
-    """Keep-alive ping (GitHub Actions / cron-job.org) இதை நேரடியாக call பண்ணும்.
-    இது BLOCKING-ஆ இயங்கும் — request முடியும் வரை Render container awake-ஆ
-    இருக்கும், அதனால் full scrape cycle நடு-வழியில் நிறுத்தப்படாது."""
-    global _scrape_in_progress, _last_scrape_started_at
-
-    with _scrape_trigger_lock:
-        if _scrape_in_progress:
-            return jsonify({"status": "already running", "store_size": len(NEWS_STORE)})
-        _scrape_in_progress = True
-        _last_scrape_started_at = time.time()
-
-    try:
-        _scrape_one_cycle()
-    except Exception as e:
-        print("[scraper] error:", str(e))
-    finally:
-        with _scrape_trigger_lock:
-            _scrape_in_progress = False
-
-    return jsonify({"status": "done", "store_size": len(NEWS_STORE)})
+    """Keep-alive ping (cron-job.org / GitHub Actions) இதை call பண்ணும்.
+    இது FIRE-AND-FORGET-ஆ இயங்கும் — உடனே response திருப்பிடும் (cron-job.org-ன்
+    30 வினாடி free-plan timeout-ஐ ஒருபோதும் தொடாது). Scraping background thread-ல்
+    தொடரும் — Render container sleep ஆகாம இருக்க இதை frequent-ஆ (1 நிமிடத்துக்கு
+    ஒருமுறை) ping பண்ணுங்க, அப்போ background thread-க்கு முழு cycle முடிக்க
+    போதுமான நேரம் கிடைக்கும்."""
+    _maybe_trigger_refresh()
+    return jsonify({
+        "status": "refresh triggered (or already running / still fresh)",
+        "store_size": len(NEWS_STORE)
+    })
 
 
 @app.route("/api/news")
