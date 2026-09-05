@@ -301,7 +301,7 @@ def get_news():
         filtered.sort(key=_pub_date_sort_key, reverse=True)
         notice = ""
     else:
-        notice = f"{len(filtered)} செய்திகள்"
+        notice = f"{len(filtered)} News"
 
     return jsonify({"results": filtered, "notice": notice})
 
@@ -358,7 +358,7 @@ def analyze_news():
         f"/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
     )
     try:
-        resp = requests.post(gemini_url, json=payload, headers={"Content-Type": "application/json"}, timeout=20)
+        resp = requests.post(gemini_url, json=payload, headers={"Content-Type": "application/json"}, timeout=45)
         if resp.status_code != 200:
             print("Gemini API Error:", resp.text)
             return jsonify({"error": f"Gemini Error ({resp.status_code}): {resp.text}"}), resp.status_code
