@@ -16,7 +16,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 NEWSDATA_URL = "https://newsdata.io/api/1/latest"
 NEWSDATA_ARCHIVE_URL = "https://newsdata.io/api/1/archive"
 
-MAX_PAGES = 5
+MAX_PAGES = 10
 
 
 def _fetch_pages(url, base_params):
@@ -275,7 +275,7 @@ def get_news():
         live_results.sort(key=_pub_date_sort_key, reverse=True)
         return jsonify({
             "results": live_results,
-            "notice": ""
+            "notice": "Google News வெப் ஸ்கிராப்பிங் மூலம் நேரடியாகப் பெறப்பட்ட முடிவுகள்."
         })
 
     # ---- Category / state browsing: serve from the continuously-updated cache ----
@@ -301,7 +301,7 @@ def get_news():
         filtered.sort(key=_pub_date_sort_key, reverse=True)
         notice = ""
     else:
-        notice = f"{len(filtered)} News"
+        notice = f"{len(filtered)} செய்திகள் News."
 
     return jsonify({"results": filtered, "notice": notice})
 
@@ -331,8 +331,22 @@ def analyze_news():
         "Analyze the provided REAL news item and respond ONLY with a valid raw JSON object (no markdown, no ```json). "
         "Do not invent facts, numbers, or events that are not reasonably supported by the headline/details given. "
         "Strictly use these keys:\n"
-        "1. 'what_happened': 3-4 sentences in Tamil explaining the event in detail.\n"
-        "2. 'past_history': 3-4 sentences in Tamil detailing where and when similar incidents have happened previously in India or worldwide.\n"
+        "1. 'what_happened': 10-14 detailed sentences in Tamil explaining the event as thoroughly as possible. "
+        "Cover ALL of the following, in flowing paragraph form (not a bulleted list): WHO is involved (people, "
+        "officials, organizations, companies named specifically); WHAT exactly happened, step by step, in the order "
+        "it unfolded; WHERE precisely (city/district, state, or country); WHEN (specific date/time references if "
+        "available); WHY it started or what triggered it; WHAT actions, statements, or decisions were taken by each "
+        "party involved; any numbers, figures, or statistics mentioned (amounts, counts, percentages); and the "
+        "CURRENT status or latest situation as of the given date. Do not summarize briefly - expand on every fact "
+        "given in the headline/details with full context and explanation. Be specific and comprehensive, never "
+        "generic or vague.\n"
+        "2. 'past_history': 4-5 sentences in Tamil detailing SPECIFIC similar incidents that happened previously "
+        "in India or worldwide. For EACH past incident you mention, you MUST explicitly state BOTH: "
+        "(a) the exact or approximate DATE (day if known, month, and year) - e.g. 'செப்டம்பர் 2019', 'ஜூலை 15, 2021'; "
+        "(b) the exact PLACE - city/district AND state if in India (e.g. 'கோயம்புத்தூர், தமிழ்நாடு'), or country if outside India. "
+        "If you are not confident of the exact date or place, give your best-known year/state at minimum, and say "
+        "'கிட்டத்தட்ட' (approximately) rather than omitting it entirely. Never describe a past incident without "
+        "attaching both a date and a place to it.\n"
         "3. 'scientific_reasons': 3-4 sentences in Tamil covering scientific/economic causes, facts, and what experts say.\n"
         "4. 'future_outlook': 2-3 sentences in Tamil on whether this could happen again, future risks, and prevention.\n"
         f"{extra_key}"
@@ -349,7 +363,7 @@ def analyze_news():
         ],
         "generationConfig": {
             "temperature": 0.3,
-            "maxOutputTokens": 1200
+            "maxOutputTokens": 5000
         }
     }
 
@@ -358,7 +372,7 @@ def analyze_news():
         f"/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
     )
     try:
-        resp = requests.post(gemini_url, json=payload, headers={"Content-Type": "application/json"}, timeout=45)
+        resp = requests.post(gemini_url, json=payload, headers={"Content-Type": "application/json"}, timeout=60)
         if resp.status_code != 200:
             print("Gemini API Error:", resp.text)
             return jsonify({"error": f"Gemini Error ({resp.status_code}): {resp.text}"}), resp.status_code
