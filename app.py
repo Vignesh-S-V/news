@@ -16,7 +16,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 NEWSDATA_URL = "https://newsdata.io/api/1/latest"
 NEWSDATA_ARCHIVE_URL = "https://newsdata.io/api/1/archive"
 
-MAX_PAGES = 10
+MAX_PAGES = 5
 
 
 def _fetch_pages(url, base_params):
@@ -301,7 +301,7 @@ def get_news():
         filtered.sort(key=_pub_date_sort_key, reverse=True)
         notice = ""
     else:
-        notice = f"{len(filtered)} செய்திகள் News."
+        notice = f"{len(filtered)} News"
 
     return jsonify({"results": filtered, "notice": notice})
 
