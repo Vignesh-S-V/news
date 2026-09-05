@@ -275,7 +275,7 @@ def get_news():
         live_results.sort(key=_pub_date_sort_key, reverse=True)
         return jsonify({
             "results": live_results,
-            "notice": "Google News வெப் ஸ்கிராப்பிங் மூலம் நேரடியாகப் பெறப்பட்ட முடிவுகள்."
+            "notice": ""
         })
 
     # ---- Category / state browsing: serve from the continuously-updated cache ----
