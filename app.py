@@ -100,17 +100,17 @@ def get_news():
         "language": language,
     }
 
+    if category and category != "top":
+        base_params["category"] = category
+
     if state:
         base_params["country"] = "in"
         if query:
             base_params["q"] = f"{query} {state}"
         else:
             base_params["q"] = state
-    else:
-        if query:
-            base_params["q"] = query
-        elif category and category != "top":
-            base_params["category"] = category
+    elif query:
+        base_params["q"] = query
 
     if from_date:
         base_params["from_date"] = from_date
@@ -131,7 +131,7 @@ def get_news():
         if scraped_results:
             return jsonify({
                 "results": scraped_results,
-                "notice": ""
+                "notice": "Archive limit காரணமாக Google News வெப் ஸ்கிராப்பிங் மூலம் தரவுகள் பெறப்பட்டுள்ளன."
             })
 
     if not all_results and last_error:
