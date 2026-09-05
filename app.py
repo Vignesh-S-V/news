@@ -60,7 +60,7 @@ def _fetch_pages(url, base_params):
 
 
 def _pub_date_sort_key(item):
-    """எடுக்கக்கூடிய அளவுக்கு அசல் publish நேரத்தை sort key ஆக மாற்றும் (parse தோல்வியுற்றால் மிகப் பழையதாகக் கருதப்படும்)."""
+   
     raw = item.get("pubDate", "")
     try:
         return parsedate_to_datetime(raw).timestamp()
@@ -243,7 +243,7 @@ def get_news():
             if scraped_results:
                 return jsonify({
                     "results": scraped_results,
-                    "notice": "Archive limit காரணமாக Google News வெப் ஸ்கிராப்பிங் மூலம் தரவுகள் பெறப்பட்டுள்ளன."
+                    "notice": ""
                 })
             return jsonify({"error": last_error}), 502
 
@@ -260,7 +260,7 @@ def get_news():
         live_results.sort(key=_pub_date_sort_key, reverse=True)
         return jsonify({
             "results": live_results,
-            "notice": "Google News வெப் ஸ்கிராப்பிங் மூலம் நேரடியாகப் பெறப்பட்ட முடிவுகள்."
+            "notice": ""
         })
 
     # ---- Category / state browsing: serve from the continuously-updated cache ----
@@ -284,7 +284,7 @@ def get_news():
         search_term = state or (category if category and category != "top" else "India news")
         filtered = fetch_google_news_rss(search_term, language)
         filtered.sort(key=_pub_date_sort_key, reverse=True)
-        notice = "Cache இன்னும் தயார் இல்லை (server new-ஆ start ஆனது) — சிறிது நேரம் கழித்து மறுபடி பாருங்கள், முழு cache நிரம்பும்."
+        notice = ""
     else:
         notice = f"{len(filtered)} செய்திகள் — தொடர்ச்சியான web-scraping cache-ல் இருந்து, தேதி வாரியாக சீரமைக்கப்பட்டவை."
 
